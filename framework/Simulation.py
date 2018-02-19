@@ -211,12 +211,13 @@ class Simulation(MessageHandler.MessageUser):
     np.set_printoptions(threshold=np.inf)
     #establish message handling: the error, warning, message, and debug print handler
     self.messageHandler = MessageHandler.MessageHandler()
-    self.verbosity      = verbosity
+    verbosity =  # FIXME
+    #self.verbosity      = verbosity
+    self.setLocalVerbosity(verbosity, **verbOptions)
     callerLength        = 25
     tagLength           = 15
     suppressErrs        = False
-    self.messageHandler.initialize({'verbosity':self.verbosity,
-                                    'callerLength':callerLength,
+    self.messageHandler.initialize({'callerLength':callerLength,
                                     'tagLength':tagLength,
                                     'suppressErrs':suppressErrs})
     readtime = datetime.datetime.fromtimestamp(self.messageHandler.starttime).strftime('%Y-%m-%d %H:%M:%S')
@@ -328,7 +329,8 @@ class Simulation(MessageHandler.MessageUser):
     #handle the setting of how the jobHandler act
     self.__modeHandler = SimulationMode(self.messageHandler)
     self.printTag = 'SIMULATION'
-    self.raiseAMessage('Simulation started at',readtime,verbosity='silent')
+    # use _RAVEN_message to bypass the verbosity filter
+    self._RAVEN_message('Simulation started at',readtime)
 
 
     self.pollingThread = threading.Thread(target=self.jobHandler.startLoop)
@@ -395,14 +397,19 @@ class Simulation(MessageHandler.MessageUser):
       self.raiseAnError(IOError,'The external xml input file ' + externalXMLFile + ' does not exist!')
     return externalElement
 
-  def XMLpreprocess(self,node,inputFileName=None):
+  def XMLpreprocess(self,node,inputFileName=None,depth=0):
     """
       Preprocess the input file, load external xml files into the main ET
       @ In, node, TreeStructure.InputNode, element of RAVEN input file
       @ In, inputFileName, string, optional, the raven input file name
+      @ In, depth, int, optional, tracks recursion
       @ Out, None
     """
-    self.verbosity = node.attrib.get('verbosity','all').lower()
+    # if on the outermost node, read the verbosity in
+    if depth == 0:
+      verbosity = node.attrib.get('verbosity','all').lower()
+      otherVerbOptions = dict((option, True) for option in node.attrib.get('printOptions',[]))
+      self.setLocalVerbosity(verbosity,**otherVerbOptions)
     for element in node.iter():
       for subElement in element:
         if subElement.tag == 'ExternalXML':
@@ -412,7 +419,7 @@ class Simulation(MessageHandler.MessageUser):
           newElement = self.ExternalXMLread(xmlToLoad,nodeName,inputFileName)
           element.append(newElement)
           element.remove(subElement)
-          self.XMLpreprocess(node,inputFileName)
+          self.XMLpreprocess(node,inputFileName=inputFileName,depth=depth+1)
 
   def XMLread(self,xmlNode,runInfoSkip = set(),xmlFilename=None):
     """
@@ -423,20 +430,20 @@ class Simulation(MessageHandler.MessageUser):
       @ Out, None
     """
     #TODO update syntax to note that we read InputTrees not XmlTrees
-    unknownAttribs = utils.checkIfUnknowElementsinList(['printTimeStamps','verbosity','color'],list(xmlNode.attrib.keys()))
+    unknownAttribs = utils.checkIfUnknowElementsinList(['printTimeStamps','verbosity','printOptions','color'],list(xmlNode.attrib.keys()))
     if len(unknownAttribs) > 0:
       errorMsg = 'The following attributes are unknown:'
       for element in unknownAttribs:
         errorMsg += ' ' + element
       self.raiseAnError(IOError,errorMsg)
-    self.verbosity = xmlNode.attrib.get('verbosity','all').lower()
+    #self.verbosity = xmlNode.attrib.get('verbosity','all').lower()
     if 'printTimeStamps' in xmlNode.attrib.keys():
       self.raiseADebug('Setting "printTimeStamps" to',xmlNode.attrib['printTimeStamps'])
       self.messageHandler.setTimePrint(xmlNode.attrib['printTimeStamps'])
     if 'color' in xmlNode.attrib.keys():
       self.raiseADebug('Setting color output mode to',xmlNode.attrib['color'])
       self.messageHandler.setColor(xmlNode.attrib['color'])
-    self.messageHandler.verbosity = self.verbosity
+    #self.messageHandler.verbosity = self.verbosity
     runInfoNode = xmlNode.find('RunInfo')
     if runInfoNode is None:
       self.raiseAnError(IOError,'The RunInfo node is missing!')
@@ -481,6 +488,8 @@ class Simulation(MessageHandler.MessageUser):
         else:
           globalAttributes = child.attrib
           #if 'verbosity' in globalAttributes.keys(): self.verbosity = globalAttributes['verbosity']
+        if 'verbosity' not in globalAttributes:
+          globalAttributes['verbosity'] = self.getLocalVerbosity()
         if Class not in ['RunInfo','OutStreams'] and "returnInputParameter" in self.addWhatDict[Class].__dict__:
           paramInput = self.addWhatDict[Class].returnInputParameter()
           paramInput.parseNode(child)

@@ -74,6 +74,13 @@ self.raiseAMessage('Hello, World', verbosity='silent')
 will be printed along with errors if the simulation verbosity is set to 'silent', as well as
 all other levels.
 
+Additionally, other print options can be added. For example,
+
+self.raiseATiming('jobID "12" action "finishedCollect")
+
+will add a timing note to the output only if "timing" messages are requested in Simulation attributes.
+
+
 TL;DR: MessageUser is a superclass that gives access to hooks to the simulation's MessageHandler
 instance, while the MessageHandler is an output stream control tool.
 """
@@ -83,8 +90,15 @@ class MessageUser(object):
     Inheriting from this class grants access to methods used by the MessageHandler.
     In order to work properly, a subclass of this superclass should have a member
     'self.messageHandler' that references a MessageHandler instance.
+
+    Note that verbosity is handled by pointing "raiseA*" methods to either a message producer (error, warning, etc)
+    or the "null" method, which simply does nothing.  If the developer desires to bypass the verbosity filter,
+    they can directly call the _RAVEN_* methods.
+
+    Also note that care should be taken when assigning to "self" here, as this namespace is shared with all
+    inheriting entities.
   """
-  def raiseAnError(self,etype,*args,**kwargs):
+  def _RAVEN_error(self,etype,*args,**kwargs):
     """
       Raises an error. By default shows in all verbosity levels.
       @ In, etype, Exception, Exception class to raise (e.g. IOError)
@@ -94,13 +108,16 @@ class MessageUser(object):
                             tag, the message label (default 'ERROR')
       @ Out, None
     """
-    verbosity = kwargs.get('verbosity','silent')
+    # adjust traceback depending on verbosity
+    if self._RAVEN_verbosity < 3:
+      # TODO this changes the traceback at the system level!  Is this okay, or do we want more local control?
+      sys.tracebacklimit=0
     tag       = kwargs.get('tag'      ,'ERROR' )
     color     = kwargs.get('color'    ,None     )
     msg = ' '.join(str(a) for a in args)
-    self.messageHandler.error(self,etype,msg,str(tag),verbosity,color)
+    self.messageHandler.error(self,etype,msg,str(tag),color)
 
-  def raiseAWarning(self,*args,**kwargs):
+  def _RAVEN_warning(self,*args,**kwargs):
     """
       Prints a warning. By default shows in 'quiet', 'all', and 'debug'
       @ In, *args, dict, comma-seperated list of things to put in message (as print() function)
@@ -109,13 +126,12 @@ class MessageUser(object):
                             tag, the message label (default 'Warning')
       @ Out, None
     """
-    verbosity = kwargs.get('verbosity','quiet'  )
     tag       = kwargs.get('tag'      ,'Warning')
     color     = kwargs.get('color'    ,None     )
     msg = ' '.join(str(a) for a in args)
-    self.messageHandler.message(self,msg,str(tag),verbosity,color)
+    self.messageHandler.message(self,msg,str(tag),color)
 
-  def raiseAMessage(self,*args,**kwargs):
+  def _RAVEN_message(self,*args,**kwargs):
     """
       Prints a message. By default shows in 'all' and 'debug'
       @ In, *args, dict, comma-seperated list of things to put in message (as print() function)
@@ -124,14 +140,13 @@ class MessageUser(object):
                             tag, the message label (default 'Message')
       @ Out, None
     """
-    verbosity  = kwargs.get('verbosity' ,'all'    )
     tag        = kwargs.get('tag'       ,'Message')
     color      = kwargs.get('color'     ,None     )
     forcePrint = kwargs.get('forcePrint',False     )
     msg = ' '.join(str(a) for a in args)
-    self.messageHandler.message(self,msg,str(tag),verbosity,color,forcePrint=forcePrint)
+    self.messageHandler.message(self,msg,str(tag),color,forcePrint=forcePrint)
 
-  def raiseADebug(self,*args,**kwargs):
+  def _RAVEN_debug(self,*args,**kwargs):
     """
       Prints a debug message. By default shows only in 'debug'
       @ In, *args, dict, comma-seperated list of things to put in message (as print() function)
@@ -140,11 +155,27 @@ class MessageUser(object):
                             tag, the message label (default 'DEBUG')
       @ Out, None
     """
-    verbosity = kwargs.get('verbosity','debug')
     tag       = kwargs.get('tag'      ,'DEBUG')
     color     = kwargs.get('color'    ,None   )
     msg = ' '.join(str(a) for a in args)
-    self.messageHandler.message(self,msg,str(tag),verbosity,color)
+    self.messageHandler.message(self,msg,str(tag),color)
+
+  def _RAVEN_timing(self,*args,**kwargs):
+    """
+      Prints a timing message.
+      Timing messages are quite specifically templated.  They should be key words followed by values in quotataion marks;
+      for example:
+      self.raiseATiming('jobID "self.prefix" status "PASS" residual "6.2"')
+      @ In, *args, dict, comma-seperated list of things to put in message (as print() function)
+      @ In, **kwargs, dict, optional arguments, which can be:
+                            verbosity, the priority of the message (default 'debug')
+                            tag, the message label (default 'DEBUG')
+      @ Out, None
+    """
+    tag   = kwargs.get('tag'  , 'TIMING')
+    color = kwargs.get('color', None    )
+    msg = ' '.join(str(a) for a in args)
+    self.messageHandler.message(self,msg,str(tag),color)
 
   def getLocalVerbosity(self,default=None):
     """
@@ -152,12 +183,68 @@ class MessageUser(object):
       @ In, default, string, optional, the verbosity level to return if not found
       @ Out, verbosity, string, verbosity type (e.g. 'all')
     """
-    if hasattr(self,'verbosity'):
-      return self.verbosity
+    return self._RAVEN_verbosity
+    #if hasattr(self,'verbosity'):
+    #  return self.verbosity
+    #else:
+    #  return default
+
+  def setLocalVerbosity(self,verbosity,**options):
+    """
+      Sets the entity's verbosity.  Redirects debug, warning, messages, etc based on verbosity and options.
+      Must be called before writing any messages.
+      @ In, verbosity, string, desired verbosity level (silent, quiet, all, debug)
+      @ In, options, dict, optional, additional keywords as {str:bool} to enable (e.g. {'timing':True})
+      @ Out, handler, MessageHandler, instance of the message handler
+    """
+    # set general verbosity first
+    ## if a verbosity level is desired it points to the appropriate method; otherwise, it points at "null"
+    numVerbosity = self.messageHandler.getVerbosityCode(verbosity)
+    ## store the verbosity locally
+    self._RAVEN_verbosity = numVerbosity
+    ## fully enabled, "debug" mode
+    if numVerbosity == 3:
+      self.raiseADebug   = self._RAVEN_debug
+      self.raiseAMessage = self._RAVEN_message
+      self.raiseAWarning = self._RAVEN_warning
+      self.raiseAnError  = self._RAVEN_error
+    ## no debug, "all" mode
+    elif numVerbosity == 2:
+      self.raiseADebug   = self.null
+      self.raiseAMessage = self._RAVEN_message
+      self.raiseAWarning = self._RAVEN_warning
+      self.raiseAnError  = self._RAVEN_error
+    ## warnings and errors, "quiet" mode
+    elif numVerbosity == 1:
+      self.raiseADebug   = self.null
+      self.raiseAMessage = self.null
+      self.raiseAWarning = self._RAVEN_warning
+      self.raiseAnError  = self._RAVEN_error
+    ## only errors, "silent" mode
+    elif numVerbosity == 0:
+      self.raiseADebug   = self.null
+      self.raiseAMessage = self.null
+      self.raiseAWarning = self.null
+      self.raiseAnError  = self._RAVEN_error
+    # now, set optional settings
+    ## timing statements
+    if options.get('timing',False):
+      self.raiseATiming = self._RAVEN_timing
     else:
-      return default
+      self.raiseATiming = self.null
 
+  def _RAVEN_null(self,*args,**kwargs):
+    """
+      Does nothing.  Used for redirecting verbosities.
+      @ In, args, list, optional, unused
+      @ In, kwargs, dict, optional, unused
+    """
+    pass
 
+#
+#
+#
+#
 class MessageHandler(object):
   """
     Class for handling messages, warnings, and errors in RAVEN.  One instance of this
@@ -172,12 +259,10 @@ class MessageHandler(object):
     """
     self.starttime    = time.time()
     self.printTag     = 'MESSAGE HANDLER'
-    self.verbosity    = None
-    self.suppressErrs = False
     self.printTime    = True
     self.inColor      = False
     self.verbCode     = {'silent':0, 'quiet':1, 'all':2, 'debug':3}
-    self.colorDict    = {'debug':'yellow', 'message':'neutral', 'warning':'magenta', 'error':'red'}
+    self.colorDict    = {'debug':'yellow', 'message':'neutral', 'warning':'magenta', 'error':'red', 'timing','green'}
     self.colors={
       'neutral' : '\033[0m',
       'red'     : '\033[31m',
@@ -195,10 +280,8 @@ class MessageHandler(object):
       @ In, initDict, dict, dictionary of global options
       @ Out, None
     """
-    self.verbosity     = initDict.get('verbosity','all').lower()
     self.callerLength  = initDict.get('callerLength',40)
     self.tagLength     = initDict.get('tagLength',30)
-    self.suppressErrs  = initDict['suppressErrs'] in utils.stringsThatMeanTrue() if 'suppressErrs' in initDict.keys() else False
 
   def printWarnings(self):
     """
@@ -270,68 +353,48 @@ class MessageHandler(object):
       tag = str(obj)
     return tag
 
-  def getDesiredVerbosity(self,caller):
-    """
-      Tries to use local verbosity; otherwise uses global
-      @ In, caller, instance, the object desiring to print
-      @ Out, desVerbosity, int, integer equivalent to verbosity level
-    """
-    localVerb = caller.getLocalVerbosity(default=self.verbosity)
-    if localVerb == None:
-      localVerb = self.verbosity
-    desVerbosity = self.checkVerbosity(localVerb)
-    return desVerbosity
-
-  def checkVerbosity(self,verb):
+  def getVerbosityCode(self,verb):
     """
       Converts English-readable verbosity to computer-legible integer
       @ In, verb, string, the string verbosity equivalent
       @ Out, currentVerb, int, integer equivalent to verbosity level
     """
-    if str(verb).strip().lower() not in self.verbCode.keys():
+    verb = str(verb).strip().lower()
+    if verb not in self.verbCode.keys():
       raise IOError('Verbosity key '+str(verb)+' not recognized!  Options are '+str(self.verbCode.keys()+[None]),'ERROR','silent')
-    currentVerb = self.verbCode[str(verb).strip().lower()]
+    currentVerb = self.verbCode[verb]
     return currentVerb
 
-  def error(self,caller,etype,message,tag='ERROR',verbosity='silent',color=None):
+  def error(self,caller,etype,message,tag='ERROR',color=None):
     """
       Raise an error message, unless errors are suppressed.
       @ In, caller, object, the entity desiring to print a message
       @ In, etype, Error, the type of error to throw
       @ In, message, string, the message to print
       @ In, tag, string, optional, the printed message type (usually Message, Debug, or Warning, and sometimes FIXME)
-      @ In, verbosity, string, optional, the print priority of the message
       @ In, color, string, optional, color to apply to message
       @ Out, None
     """
-    verbval = max(self.getDesiredVerbosity(caller),self.checkVerbosity(self.verbosity))
-    self.message(caller,message,tag,verbosity,color=color)
-    if not self.suppressErrs:
-      self.printWarnings()
-      # debug mode gets full traceback, others quieted
-      if verbval<3:
-        #all, quiet, silent
-        sys.tracebacklimit=0
-      raise etype(message)
+    self.message(caller,message,tag,color=color)
+    self.printWarnings()
+    raise etype(message)
 
-  def message(self,caller,message,tag,verbosity,color=None,writeTo=sys.stdout, forcePrint=False):
+  def message(self,caller,message,tag,color=None,writeTo=sys.stdout,forcePrint=False):
     """
       Print a message
       @ In, caller, object, the entity desiring to print a message
       @ In, message, string, the message to print
       @ In, tag, string, the printed message type (usually Message, Debug, or Warning, and sometimes FIXME)
-      @ In, verbosity, string, the print priority of the message
       @ In, color, string, optional, color to apply to message
-      @ In, forcePrint, bool, optional, force the print independetly on the verbosity level? Defaul False
+      @ In, forcePrint, bool, optional, force the print independent of the verbosity level. Default False
       @ Out, None
     """
-    verbval = self.checkVerbosity(verbosity)
-    okay,msg = self._printMessage(caller,message,tag,verbval,color,forcePrint)
+    okay,msg = self._formatMessage(caller,message,tag,color,forcePrint)
     if tag.lower().strip() == 'warning':
       self.addWarning(message)
     if okay:
       print(msg,file=writeTo)
-    sys.stdout.flush()
+    sys.stdout.flush() # TODO what if not writing to stdout?
 
   def addWarning(self,msg):
     """
@@ -346,35 +409,29 @@ class MessageHandler(object):
     else:
       self.warningCount[index] += 1
 
-  def _printMessage(self,caller,message,tag,verbval,color=None,forcePrint=False):
+  def _formatMessage(self,caller,message,tag,color=None,forcePrint=False):
     """
-      Checks verbosity to determine whether something should be printed, and formats message
-      @ In, caller , object, the entity desiring to print a message
+      formats message prior to printing
+      @ In, caller, object, the entity desiring to print a message
       @ In, message, string, the message to print
-      @ In, tag    , string, the printed message type (usually Message, Debug, or Warning, and sometimes FIXME)
-      @ In, verbval, int   , the print priority of the message
+      @ In, tag, string, the printed message type (usually Message, Debug, or Warning, and sometimes FIXME)
       @ In, color, string, optional, color to apply to message
       @ In, forcePrint, bool, optional, force the print independetly on the verbosity level? Defaul False
       @ Out, (shouldIPrint,msg), tuple, shouldIPrint -> bool, indication if the print should be allowed
                                         msg          -> string, the formatted message
     """
-    #allows raising standardized messages
-    shouldIPrint = False
-    desired = self.getDesiredVerbosity(caller)
-    if verbval <= desired or forcePrint:
-      shouldIPrint=True
-    if not shouldIPrint:
-      return False,''
+    # get string representation of calling entity
     ctag = self.getStringFromCaller(caller)
+    # format the message for consistency
     msg=self.stdMessage(ctag,tag,message,color)
-    return shouldIPrint,msg
+    return msg
 
   def stdMessage(self,pre,tag,post,color=None):
     """
       Formats string for pretty printing
-      @ In, pre  , string, who is printing the message
-      @ In, tag  , string, the type of message being printed (Error, Warning, Message, Debug, FIXME, etc)
-      @ In, post , string, the actual message body
+      @ In, pre, string, who is printing the message
+      @ In, tag, string, the type of message being printed (Error, Warning, Message, Debug, FIXME, etc)
+      @ In, post, string, the actual message body
       @ In, color, string, optional, color to apply to message
       @ Out, msg, string, formatted message
     """

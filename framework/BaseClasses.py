@@ -75,7 +75,11 @@ class BaseType(MessageHandler.MessageUser):
       @ In, globalAttributes, dict{str:object}, optional, global attributes
       @ Out, None
     """
+    # establish message handler
     self.setMessageHandler(messageHandler)
+    verbosity = xmlNode.attrib.get('verbosity',globalAttributes['verbosity'])  # set through XML, or default takes Simulation's
+    self.setLocalVerbosity(verbosity)
+      self.raiseADebug('Set verbosity for '+str(self)+' to '+str(self.verbosity))
     self.variableGroups = variableGroups
     if 'name' in xmlNode.attrib.keys():
       self.name = xmlNode.attrib['name']
@@ -87,6 +91,7 @@ class BaseType(MessageHandler.MessageUser):
     if 'verbosity' in xmlNode.attrib.keys():
       self.verbosity = xmlNode.attrib['verbosity'].lower()
       self.raiseADebug('Set verbosity for '+str(self)+' to '+str(self.verbosity))
+    self.messageHandler.
     #search and replace variableGroups where found in texts
     def replaceVariableGroups(node):
       """
@@ -106,6 +111,7 @@ class BaseType(MessageHandler.MessageUser):
         replaceVariableGroups(child)
     replaceVariableGroups(xmlNode)
     self._readMoreXML(xmlNode)
+    # create custom message handler based on verbosity
     self.raiseADebug('------Reading Completed for:')
     self.printMe()
 
